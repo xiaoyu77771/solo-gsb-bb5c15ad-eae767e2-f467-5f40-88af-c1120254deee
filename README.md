@@ -28,6 +28,20 @@
     **不会重复请求**后端。
   - 非法范围（起值或止值不是有限数、起值与止值相同）、电阻起值或止值非正、
     采样点数不在 2～101、扫描元件不存在或编号重复等，均在前后端给出明确提示。
+- **两节点端口等效（戴维南）**：从现有节点表选择两个不同节点作为端口的
+  正端 `p` 与负端 `n`，后端分两阶段计算并返回：
+  - **开路电压 V_oc**：直接求解原网络（端口不挂元件，天然开路），
+    取 `V_oc = V(p) − V(n)`；
+  - **等效电阻 R_eq**：在网络副本上将独立电压源置零（0 V，短路）、
+    独立电流源置零（0 A，开路），再**从 n 向 p 注入 1 A 测试电流**
+    （向 p 注入 +1 A、从 n 抽出 1 A），取 `R_eq = V(p) − V(n)`（Ω）。
+  - 结果卡显示**端口方向（p → n）、开路电压与等效电阻**及等效电路说明；
+    等效结果与接地节点的选择无关。
+  - 任一步出现**浮置子网 / 电压源冲突 / 奇异 / 无接地**时，错误分组原样返回
+    并带上 `stage`（`open_circuit` 或 `equivalent_resistance`）标记，
+    前端按阶段展示，**不展示任何半截伪结果**。
+  - 计算在网络副本上进行，不改写元件表；**节点表发生变更（增删 / 改名）后，
+    旧的端口等效结果自动失效隐藏**，需重新计算。
 
 ## 元件方向约定
 
@@ -63,6 +77,13 @@ API：
   （见下）；**扫描参数本身非法**（元件缺失 / 重复、范围非法、电阻范围含非正值、
   点数越界等）时整体返回 `422` 且错误码为 `sweep_validation`；扫描可以开始时
   恒返回 `200`，各采样点的失败以 `status: "error"` 内联在结果中，不影响其它点。
+- `POST /api/thevenin`：两节点端口戴维南等效。请求体与 `/api/solve` 相同，
+  另加一个 `port` 段（见下）。**端口参数本身非法**（缺少 `port` 段、端点不在
+  节点表、p 与 n 相同等）时返回 `422` 且错误码为 `port_validation`；端口合法时，
+  开路电压（`open_circuit`）或等效电阻（`equivalent_resistance`）任一阶段求解
+  失败，同样返回 `422`，错误分组沿用 `/api/solve` 的
+  `no_ground / floating_subnet / voltage_conflict / singular / validation` 编码，
+  并额外带 `stage` 字段标明失败阶段；成功返回 `200`。
 
 停止服务：
 
@@ -175,6 +196,95 @@ curl -s -X POST http://localhost:8000/api/sweep \
 | 采样点数不是整数或不在 2～101 | 拒绝成扫 |
 | 基准网络或某个取值点结构矛盾 / 数值奇异 | 该点 `status:"error"` 并保留错误，其余点照常求解 |
 
+## 两节点端口等效（戴维南）
+
+### 页面操作
+
+1. 按常规录入网络（可先“载入示例①”），在左下「两节点端口等效（戴维南）」卡片的
+   两个下拉中分别选择端口**正端 p** 与**负端 n**（必须是节点表中两个不同节点）；
+2. 点击「计算端口等效」，右侧结果卡显示：
+   - **端口方向** `p → n`；
+   - **开路电压 V_oc (V)**：原网络在该端口的开路电位差 `V(p) − V(n)`；
+   - **等效电阻 R_eq (Ω)**：独立源全部置零后，从 n 向 p 注入 1 A 测试电流
+     （电流方向 n→p，即向 p 注入 +1 A、从 n 抽出 1 A）
+     得到的端口电位差 `V(p) − V(n)`；
+   - 一行等效电路文字说明（理想电压源串联等效电阻）。
+3. 开路或测试阶段任一阶段失败（无接地、浮置子网、电压源冲突、矩阵奇异）时，
+   结果卡不出现，反馈面板按**阶段**（阶段 1 开路电压 / 阶段 2 等效电阻）
+   展示与 `/api/solve` 一致的结构化错误，不会给出伪结果。
+4. **节点表一旦变更**（添加 / 删除节点、修改节点编号、载入示例、清空），
+   旧结果立即失效隐藏；仅修改元件参数 / 接地不影响已选端口，可直接重新计算。
+
+### 请求体与返回结构
+
+在网络 JSON 中追加 `port` 段：
+
+```bash
+curl -s -X POST http://localhost:8000/api/thevenin \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "ground": "0",
+    "nodes": ["0", "1", "2"],
+    "elements": [
+      {"id": "V1", "type": "V", "node_p": "1", "node_n": "0", "value": 10},
+      {"id": "R1", "type": "R", "node_p": "1", "node_n": "2", "value": 10},
+      {"id": "R2", "type": "R", "node_p": "2", "node_n": "0", "value": 20}
+    ],
+    "port": {"node_p": "2", "node_n": "0"}
+  }'
+```
+
+返回（`200`）：
+
+```json
+{
+  "ok": true,
+  "port": {"node_p": "2", "node_n": "0"},
+  "open_circuit_voltage": 6.666666666666667,
+  "equivalent_resistance": 6.666666666666664,
+  "test_current": 1.0,
+  "warnings": []
+}
+```
+
+（上例：开路为 10 V 在 10 Ω + 20 Ω 上的分压 20/3 V；独立源置零后 V1 短路，
+R_eq 为 10 Ω ∥ 20 Ω = 20/3 Ω。）
+
+- 交换 p、n 会使 `open_circuit_voltage` 反号，`equivalent_resistance` 不变。
+- 端口取在理想电压源两端时，`equivalent_resistance` 为 `0`。
+- 计算在**深拷贝**上进行：原网络中的独立源数值不会被置零，1 A 测试电流源
+  （内部编号 `__port_Itest__`，与用户元件撞号时自动避让）也不会残留在元件表中。
+- 开路电压阶段的数值警告（如条件数过大）经 `warnings` 返回。
+
+端口参数非法时返回 `422 port_validation`：
+
+```json
+{"ok": false,
+ "errors": [{"code": "port_validation",
+             "message": "端口参数未通过校验",
+             "items": [{"ref": "2", "detail": "端口的 p、n 端必须选择不同节点（不能对同一节点取等效）"}]}]}
+```
+
+网络在某个阶段无唯一解时，错误分组与 `/api/solve` 完全相同，只是多了 `stage`：
+
+```json
+{"ok": false,
+ "errors": [{"code": "floating_subnet",
+             "stage": "open_circuit",
+             "message": "检测到未通过电阻或电压源与接地节点连通的浮置子网……",
+             "items": [{"nodes": ["2", "3"]}]}]}
+```
+
+### 校验 / 失败规则汇总
+
+| 情形 | 处理 |
+| ---- | ---- |
+| 缺少 `port` 段 / p 或 n 为空 | 拒绝计算（`422 port_validation`） |
+| p 或 n 不在节点表 | 拒绝计算（`port_validation`，指名缺失节点） |
+| p 与 n 为同一节点 | 拒绝计算（`port_validation`） |
+| 原网络无接地 / 浮置子网 / 电压源冲突 / 奇异 / 输入非法 | `422`，原错误分组 + `stage:"open_circuit"` |
+| 置零加测试源后的网络无唯一解（防御性，正常无源网络应可解） | `422`，原错误分组 + `stage:"equivalent_resistance"` |
+
 ## 本地开发（不使用 Docker）
 
 ```bash
@@ -188,15 +298,17 @@ uvicorn app.main:app --reload --port 8000
 ```
 .
 ├── app/
-│   ├── main.py            # FastAPI 路由（/api/solve、/api/sweep）与静态文件
+│   ├── main.py            # FastAPI 路由（/api/solve、/api/sweep、/api/thevenin）与静态文件
 │   ├── solver.py          # MNA 组装、结构诊断与求解
 │   ├── sweep.py           # 单参数扫描：校验 + 逐点复用 solve
+│   ├── thevenin.py        # 两节点端口戴维南等效：开路电压 + 置零注入测试电流
 │   └── static/
-│       ├── index.html     # 页面结构（含扫描表单与结果区）
-│       ├── style.css      # 样式与高亮（含扫描曲线样式）
-│       └── app.js         # 表格编辑、校验、单次求解与扫描交互
+│       ├── index.html     # 页面结构（含扫描、端口等效表单与结果区）
+│       ├── style.css      # 样式与高亮（含扫描曲线、端口等效样式）
+│       └── app.js         # 表格编辑、校验、单次求解、扫描与端口等效交互
 ├── test_solver.py         # 求解器冒烟测试：python3 test_solver.py
 ├── test_sweep.py          # 扫描冒烟测试：python3 test_sweep.py
+├── test_thevenin.py       # 端口等效冒烟测试：python3 test_thevenin.py
 ├── Dockerfile
 ├── compose.yaml
 └── requirements.txt

@@ -255,3 +255,37 @@ body {
 .status-err { background: var(--err-bg); color: var(--err); }
 .point-errors { margin: 2px 0 0; padding-left: 18px; }
 .point-errors li { color: var(--err); font-size: 12px; }
+
+/* ---------------- 两节点端口等效 ---------------- */
+.port-form {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 10px;
+  align-items: end;
+}
+.port-arrow {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--brand);
+  padding-bottom: 8px;
+}
+.thevenin-card {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.thv-eq {
+  grid-column: 1 / -1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  background: #fbfcfe;
+  font-size: 13px;
+}
+.thv-warn {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--warn);
+  font-size: 12px;
+}

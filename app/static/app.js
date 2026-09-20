@@ -13,6 +13,12 @@ let state = freshState();
 // 最近一次扫描的完整响应（含全部点的节点电压 / 支路电流），切换观测量只读取它
 let sweepResult = null;
 let sweepView = { quantity: "voltage", target: null };
+// 最近一次端口等效结果；节点表结构变更后立即失效（置 null）
+let theveninResult = null;
+// 端口下拉当前值（随节点表重建而保留 / 兜底）
+let portSel = { p: "1", n: "0" };
+// 上一次渲染端口下拉时的节点表签名，用于识别“节点变更”
+let nodeSig = "";
 
 function freshState() {
   return {
@@ -87,6 +93,53 @@ function renderGroundSelect() {
   setSelectOptions($("#ground-select"), nodeIds(), state.ground);
 }
 
+/* ------------------------------ 端口等效 ------------------------------ */
+function currentNodeSig() {
+  return JSON.stringify(nodeIds());
+}
+
+function fillPortSelect(select, current) {
+  // 与元件端点下拉一致：“—”空选项 + 缺失节点红字保留
+  select.innerHTML = "";
+  select.appendChild(el("option", { value: "", text: "—" }));
+  state.nodes.forEach((n) =>
+    select.appendChild(el("option", { value: n.id, text: n.id }))
+  );
+  if (current && !nodeIds().includes(current)) {
+    const opt = el("option", { value: current, text: current + "（缺失）" });
+    opt.style.color = "var(--err)";
+    select.appendChild(opt);
+  }
+  select.value = current || "";
+}
+
+function renderPortSelects() {
+  if (currentNodeSig() !== nodeSig) {
+    // 节点表结构（数量 / 编号 / 顺序）发生变化：旧的端口等效结果失效
+    invalidateThevenin();
+    nodeSig = currentNodeSig();
+  }
+  // 端点缺失时保留下拉中的红字“（缺失）”选项，不静默改值（与元件端点下拉一致）
+  fillPortSelect($("#port-p"), portSel.p);
+  fillPortSelect($("#port-n"), portSel.n);
+}
+
+function invalidateThevenin() {
+  if (theveninResult === null) return;
+  theveninResult = null;
+  $("#thevenin-result").classList.add("hidden");
+  const fb = $("#thevenin-feedback");
+  fb.classList.add("hidden");
+  fb.innerHTML = "";
+}
+
+$("#port-p").addEventListener("change", (ev) => {
+  portSel.p = ev.target.value;
+});
+$("#port-n").addEventListener("change", (ev) => {
+  portSel.n = ev.target.value;
+});
+
 function fillEndpointSelect(select, current) {
   // “—”空选项 + 缺失节点以红字样式的临时选项保留，避免值被静默改掉
   select.innerHTML = "";
@@ -111,6 +164,8 @@ function renderNodes() {
       state.nodes[i].id = input.value.trim();
       renderGroundSelect();
       refreshEndpointSelects();
+      // 节点编号变化即结构变化：重建端口下拉并失效旧的等效结果
+      renderPortSelects();
     });
     const del = el("button", { class: "icon-del", title: "删除", text: "✕" });
     del.addEventListener("click", () => {
@@ -190,6 +245,7 @@ function renderAll() {
   renderNodes();
   renderElements();
   renderGroundSelect();
+  renderPortSelects();
   renderSweepElements();
   clearFeedback();
 }
@@ -269,6 +325,9 @@ document.querySelectorAll("[data-sample]").forEach((btn) => {
       elements: s.elements.map((e) => ({ ...e, value: String(e.value) })),
     };
     resetSweep();
+    resetThevenin();
+    portSel = { p: s.nodes.length > 1 ? s.nodes[1].id : "", n: s.nodes[0]?.id || "" };
+    nodeSig = "";
     renderAll();
     $("#placeholder").classList.add("hidden");
   });
@@ -277,10 +336,21 @@ document.querySelectorAll("[data-sample]").forEach((btn) => {
 $("#btn-clear").addEventListener("click", () => {
   state = { ground: "", nodes: [], elements: [] };
   resetSweep();
+  resetThevenin();
+  portSel = { p: "", n: "" };
+  nodeSig = "";
   renderAll();
   $("#result-area").classList.add("hidden");
   $("#placeholder").classList.remove("hidden");
 });
+
+function resetThevenin() {
+  theveninResult = null;
+  $("#thevenin-result").classList.add("hidden");
+  const fb = $("#thevenin-feedback");
+  fb.classList.add("hidden");
+  fb.innerHTML = "";
+}
 
 function resetSweep() {
   sweepResult = null;
@@ -538,6 +608,169 @@ $("#btn-solve").addEventListener("click", async () => {
     showWarnings(data.warnings);
   } else {
     showErrors(data.errors || [{ code: "server", message: "求解失败", items: [] }]);
+  }
+});
+
+/* ------------------------------ 两节点端口等效 ------------------------------ */
+const PORT_STAGE_LABEL = {
+  open_circuit: "阶段 1 · 求开路电压",
+  equivalent_resistance: "阶段 2 · 求等效电阻（独立源置零 + 1 A 测试电流）",
+};
+
+function showTheveninFeedback(errors) {
+  const fb = $("#thevenin-feedback");
+  fb.innerHTML = "";
+  (errors || []).forEach((g) => {
+    const group = el("div", { class: "err-group" });
+    const tag = g.stage && PORT_STAGE_LABEL[g.stage]
+      ? `［${PORT_STAGE_LABEL[g.stage]}］`
+      : "";
+    group.appendChild(el("div", { class: "err-title", text: `● ${tag}${g.message}` }));
+    if (g.items && g.items.length) {
+      const ul = el("ul");
+      g.items.forEach((item) => {
+        if (item.ref) {
+          ul.appendChild(
+            el("li", {}, [
+              el("span", { class: "err-ref", text: item.ref + "：" }),
+              document.createTextNode(item.detail),
+            ])
+          );
+        } else if (item.nodes) {
+          ul.appendChild(
+            el("li", {}, [
+              document.createTextNode("子网节点："),
+              el("span", { class: "err-nodes", text: item.nodes.join("、") }),
+            ])
+          );
+        } else {
+          ul.appendChild(el("li", { text: item.detail || JSON.stringify(item) }));
+        }
+      });
+      group.appendChild(ul);
+    }
+    fb.appendChild(group);
+  });
+  $("#thevenin-result").classList.add("hidden");
+  fb.classList.remove("hidden");
+}
+
+function clearTheveninFeedback() {
+  const fb = $("#thevenin-feedback");
+  fb.classList.add("hidden");
+  fb.innerHTML = "";
+}
+
+function renderTheveninResult(r) {
+  const p = r.port.node_p;
+  const n = r.port.node_n;
+  const card = $("#thevenin-card");
+  card.innerHTML = "";
+
+  const stat = (k, v, cls = "") =>
+    el("div", { class: "power-stat" }, [
+      el("span", { class: "k", text: k }),
+      el("span", { class: "v " + cls, text: v }),
+    ]);
+
+  card.appendChild(
+    stat("端口方向", `${p} → ${n}`, "")
+  );
+  card.appendChild(
+    stat("开路电压 V_oc", `${fmt(r.open_circuit_voltage)} V`,
+      r.open_circuit_voltage < 0 ? "num-neg" : "")
+  );
+  card.appendChild(
+    stat("等效电阻 R_eq", `${fmt(r.equivalent_resistance)} Ω`, "")
+  );
+  const vocNeg = r.open_circuit_voltage < 0;
+  card.appendChild(
+    el("div", { class: "thv-eq" }, [
+      document.createTextNode("等效电路：端口 "),
+      el("b", { text: `${p} → ${n}` }),
+      document.createTextNode(" 间为 "),
+      el("b", { class: vocNeg ? "num-neg" : "",
+        text: `${fmt(r.open_circuit_voltage)} V` }),
+      document.createTextNode(
+        vocNeg
+          ? ` 理想电压源（实际正极在 n 端 ${n}）串联 `
+          : " 理想电压源（正极在 p 端）串联 "
+      ),
+      el("b", { text: `${fmt(r.equivalent_resistance)} Ω` }),
+      document.createTextNode("（1 A 测试电流由 p 端注入网络、从 n 端抽出）。"),
+    ])
+  );
+
+  if (r.warnings && r.warnings.length) {
+    const ul = el("ul", { class: "thv-warn" });
+    r.warnings.forEach((w) => ul.appendChild(el("li", { text: "⚠ " + w })));
+    card.appendChild(ul);
+  }
+
+  $("#thevenin-feedback").classList.add("hidden");
+  $("#thevenin-result").classList.remove("hidden");
+}
+
+$("#btn-thevenin").addEventListener("click", async () => {
+  clearTheveninFeedback();
+
+  const ids = nodeIds();
+  const localProblems = [];
+  // 只做端口层面的本地预检；网络本身的合法性交给后端，保证错误带阶段标记
+  if (!portSel.p) localProblems.push("未选择端口正端 p");
+  if (!portSel.n) localProblems.push("未选择端口负端 n");
+  if (portSel.p && !ids.includes(portSel.p))
+    localProblems.push(`端口正端“${portSel.p}”不在节点表中`);
+  if (portSel.n && !ids.includes(portSel.n))
+    localProblems.push(`端口负端“${portSel.n}”不在节点表中`);
+  if (portSel.p && portSel.n && portSel.p === portSel.n)
+    localProblems.push("端口的 p、n 端必须选择不同节点");
+  if (localProblems.length) {
+    showTheveninFeedback([
+      { code: "port_validation", message: "端口参数未通过校验：" + localProblems.join("；"), items: [] },
+    ]);
+    return;
+  }
+
+  const btn = $("#btn-thevenin");
+  btn.disabled = true;
+  btn.textContent = "计算中…";
+  try {
+    const payload = buildPayload();
+    payload.port = { node_p: portSel.p, node_n: portSel.n };
+
+    let resp;
+    try {
+      resp = await fetch("/api/thevenin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      showTheveninFeedback([{ code: "network", message: `网络请求失败：${err}`, items: [] }]);
+      return;
+    }
+
+    let data;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      showTheveninFeedback([{ code: "server", message: "服务端返回了无法解析的内容", items: [] }]);
+      return;
+    }
+
+    if (resp.ok && data.ok) {
+      theveninResult = data;
+      renderTheveninResult(data);
+    } else {
+      theveninResult = null;
+      showTheveninFeedback(
+        data.errors || [{ code: "server", message: "端口等效计算失败", items: [] }]
+      );
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔌 计算端口等效";
   }
 });
 

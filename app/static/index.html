@@ -10,7 +10,7 @@
   <header class="topbar">
     <div class="topbar-inner">
       <h1>直流网络校核器</h1>
-      <p class="subtitle">改进节点分析（MNA）· 节点电压 / 支路电流 / 功率平衡校核</p>
+      <p class="subtitle">改进节点分析（MNA）· 节点电压 / 支路电流 / 功率平衡校核 · 参数扫描 · 端口戴维南等效</p>
     </div>
   </header>
 
@@ -109,6 +109,30 @@
         <div id="sweep-feedback" class="error-panel hidden"></div>
       </div>
 
+      <div class="card">
+        <div class="card-head">
+          <h2>两节点端口等效（戴维南）</h2>
+        </div>
+        <div class="port-form">
+          <label class="sweep-field">
+            <span>端口正端 p</span>
+            <select id="port-p" class="input"></select>
+          </label>
+          <span class="port-arrow" title="端口方向 p → n">→</span>
+          <label class="sweep-field">
+            <span>端口负端 n</span>
+            <select id="port-n" class="input"></select>
+          </label>
+        </div>
+        <p class="hint">
+          对所选端口求戴维南等效：先求原网络的开路电压 V_oc（V_p − V_n），
+          再将独立电压源短路、独立电流源开路，从 p 端注入 1&nbsp;A 测试电流（由 n 端流出）求得等效电阻 R_eq。
+          端口开路本身无需改动电路；节点表变更后旧结果自动失效。
+        </p>
+        <button class="btn btn-block" id="btn-thevenin">🔌 计算端口等效</button>
+        <div id="thevenin-feedback" class="error-panel hidden"></div>
+      </div>
+
       <button class="btn btn-primary btn-block" id="btn-solve">▶ 校核求解</button>
     </section>
 
@@ -161,6 +185,16 @@
               <tbody></tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      <div id="thevenin-result" class="hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>两节点端口等效（戴维南）</h2>
+            <span class="legend">等效方向：端口 p → n</span>
+          </div>
+          <div id="thevenin-card" class="thevenin-card"></div>
         </div>
       </div>
 
