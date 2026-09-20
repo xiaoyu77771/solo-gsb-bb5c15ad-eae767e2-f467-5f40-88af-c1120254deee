@@ -109,6 +109,33 @@
         <div id="sweep-feedback" class="error-panel hidden"></div>
       </div>
 
+      <div class="card">
+        <div class="card-head">
+          <h2>两节点端口等效</h2>
+        </div>
+        <div class="port-form">
+          <label class="port-field">
+            <span>端口正端 p</span>
+            <select id="port-p" class="input"></select>
+          </label>
+          <span class="port-arrow">→</span>
+          <label class="port-field">
+            <span>端口负端 n</span>
+            <select id="port-n" class="input"></select>
+          </label>
+        </div>
+        <p class="hint">
+          后端先求原网络的开路端电压（p 相对 n），再将独立电压源置零（短路）、
+          独立电流源置零（开路），从 n 向 p 注入 1&nbsp;A 测试电流求戴维南等效电阻。
+          两端必须选择不同节点。
+        </p>
+        <button class="btn btn-block" id="btn-thevenin">🔌 计算端口等效</button>
+        <div id="port-stale" class="port-stale hidden">
+          ⚠ 节点表已变更，上次的端口等效结果已失效，请重新计算。
+        </div>
+        <div id="port-feedback" class="error-panel hidden"></div>
+      </div>
+
       <button class="btn btn-primary btn-block" id="btn-solve">▶ 校核求解</button>
     </section>
 
@@ -116,6 +143,16 @@
     <section class="panel panel-result">
       <div id="error-panel" class="error-panel hidden"></div>
       <div id="warning-panel" class="warning-panel hidden"></div>
+
+      <div id="thevenin-result" class="hidden">
+        <div class="card">
+          <div class="card-head">
+            <h2>两节点端口等效（戴维南）</h2>
+            <span class="count" id="port-direction"></span>
+          </div>
+          <div id="thevenin-card" class="power-card"></div>
+        </div>
+      </div>
 
       <div id="sweep-result" class="hidden">
         <div class="card">

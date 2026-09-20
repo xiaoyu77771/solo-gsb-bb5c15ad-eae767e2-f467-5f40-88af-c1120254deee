@@ -12,11 +12,12 @@ from fastapi.staticfiles import StaticFiles
 
 from .solver import CircuitError, MAX_ELEMENTS, MAX_NODES, solve
 from .sweep import SWEEP_MAX_POINTS, SWEEP_MIN_POINTS, sweep
+from .thevenin import thevenin
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI(title="直流网络校核器", version="1.1.0")
+app = FastAPI(title="直流网络校核器", version="1.2.0")
 
 
 async def _read_json_object(request: Request) -> tuple[dict[str, Any] | None, JSONResponse | None]:
@@ -70,6 +71,20 @@ async def api_sweep(request: Request) -> JSONResponse:
         result = sweep(payload)
     except CircuitError as exc:
         # 422：扫描参数（元件 / 范围 / 点数）非法，无法开始扫描
+        return JSONResponse(status_code=422, content=exc.to_dict())
+    return JSONResponse(status_code=200, content=result)
+
+
+@app.post("/api/thevenin")
+async def api_thevenin(request: Request) -> JSONResponse:
+    payload, bad = await _read_json_object(request)
+    if bad is not None:
+        return bad
+
+    try:
+        result = thevenin(payload)
+    except CircuitError as exc:
+        # 422：端口参数非法（无 stage），或某一阶段网络无唯一解（带 stage）
         return JSONResponse(status_code=422, content=exc.to_dict())
     return JSONResponse(status_code=200, content=result)
 

@@ -28,6 +28,20 @@
     **不会重复请求**后端。
   - 非法范围（起值或止值不是有限数、起值与止值相同）、电阻起值或止值非正、
     采样点数不在 2～101、扫描元件不存在或编号重复等，均在前后端给出明确提示。
+- **两节点端口等效（戴维南）**：从现有节点表选择两个**不同**节点作为端口
+  正端 `p` 与负端 `n`，后端分两步计算：
+  1. **开路端电压**：先对原网络求解，取 `Voc = V(p) − V(n)`；
+  2. **等效电阻**：在网络副本上将**独立电压源置零**（保留 0 V 支路，即理想
+     短路线）、**独立电流源置零**（开路移除），再从 `n` 向 `p` 注入 1 A
+     测试电流，取 `Req = V(p) − V(n)`。
+  - 结果卡显示**端口方向、开路电压 Voc（V）、等效电阻 Req（Ω）**及等效电路
+    说明；Voc 为负表示实际极性与所选方向相反。
+  - 任一步网络无唯一解（无接地 / 浮置子网 / 电压源冲突 / 矩阵奇异）时，
+    按失败**阶段**（`open_circuit` / `equivalent_resistance`）原样返回
+    `/api/solve` 的结构化错误，**不展示伪结果**。
+  - **节点表发生变更（增删节点、修改节点编号）后，已显示的端口结果立即失效**
+    （结果卡隐藏并提示重新计算）；仅改元件参数不影响既有结果的有效性。
+  - 置零与测试电流只作用于请求副本，**不会改写元件表**。
 
 ## 元件方向约定
 
@@ -63,6 +77,11 @@ API：
   （见下）；**扫描参数本身非法**（元件缺失 / 重复、范围非法、电阻范围含非正值、
   点数越界等）时整体返回 `422` 且错误码为 `sweep_validation`；扫描可以开始时
   恒返回 `200`，各采样点的失败以 `status: "error"` 内联在结果中，不影响其它点。
+- `POST /api/thevenin`：两节点端口戴维南等效。请求体与 `/api/solve` 相同，
+  另加一个 `port` 段（见下）。端口参数非法（缺失 / 为空 / 同端 / 节点不在表）
+  时整体返回 `422`，错误码为 `port_validation`；网络在任一计算阶段无唯一解时
+  返回 `422`，错误分组沿用 `no_ground / floating_subnet / voltage_conflict /
+  singular / validation`，并额外带 `stage` 字段标明失败阶段。
 
 停止服务：
 
@@ -175,6 +194,92 @@ curl -s -X POST http://localhost:8000/api/sweep \
 | 采样点数不是整数或不在 2～101 | 拒绝成扫 |
 | 基准网络或某个取值点结构矛盾 / 数值奇异 | 该点 `status:"error"` 并保留错误，其余点照常求解 |
 
+## 两节点端口等效
+
+### 页面操作
+
+1. 按常规录入网络（可先“载入示例①”），在左下「两节点端口等效」卡片的两个下拉中
+   分别选择**端口正端 p**与**端口负端 n**（必须是不同节点）；
+2. 点击「计算端口等效」，右侧顶部出现结果卡：
+   - **端口方向**：`p → n`；
+   - **开路电压 Voc（V）**：原网络在该端口的开路端电压 `V(p) − V(n)`，
+     负值反色显示，表示实际极性与所选方向相反；
+   - **等效电阻 Req（Ω）**：独立源置零后从 n 向 p 注入 1 A 测试电流求得，
+     并给出“Voc 电压源串联 Req 电阻”的等效电路文字说明。
+3. 计算后若**增删节点或修改节点编号**，结果卡立即隐藏并在卡片内提示
+   “结果已失效，请重新计算”；重新选择端口、再次点击即可。
+
+> 计算在网络副本上进行：电压源被置为 0 V（短路但保留支路）、电流源被移除
+> （开路），并追加一个内部 1 A 测试电流源，**页面元件表不会被修改**。
+
+### 请求体与返回结构
+
+在网络 JSON 中追加 `port` 段即可：
+
+```bash
+curl -s -X POST http://localhost:8000/api/thevenin \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "ground": "0",
+    "nodes": ["0", "1", "2"],
+    "elements": [
+      {"id": "V1", "type": "V", "node_p": "1", "node_n": "0", "value": 10},
+      {"id": "R1", "type": "R", "node_p": "1", "node_n": "2", "value": 10},
+      {"id": "R2", "type": "R", "node_p": "2", "node_n": "0", "value": 20}
+    ],
+    "port": {"node_p": "2", "node_n": "0"}
+  }'
+```
+
+返回（`200`）：
+
+```json
+{
+  "ok": true,
+  "port": {"node_p": "2", "node_n": "0"},
+  "open_circuit_voltage": 6.666666666666666,
+  "equivalent_resistance": 6.666666666666666,
+  "warnings": []
+}
+```
+
+- 上例中 `Voc = 10 × 20/(10+20) = 20/3 V`，
+  `Req = 10∥20 = 20/3 Ω`（10 V 源置零短路后）。
+- 端口方向取反（`p=0, n=2`）时 `Voc` 变号、`Req` 不变。
+- 若网络在某一阶段无法得到唯一解，返回 `422`，错误分组与 `/api/solve`
+  完全一致，顶层额外带 `stage`：
+
+```json
+{"ok": false, "stage": "open_circuit",
+ "errors": [{"code": "floating_subnet", "message": "…",
+             "items": [{"nodes": ["2", "3"]}]}]}
+```
+
+| `stage` | 含义 |
+| ------- | ---- |
+| `open_circuit` | 求开路端电压阶段：原网络无唯一解（无接地 / 浮置子网 / 电压源冲突 / 奇异） |
+| `equivalent_resistance` | 求等效电阻阶段：独立源置零并注入 1 A 后网络无唯一解 |
+
+端口参数本身非法时不带 `stage`，错误码为 `port_validation`：
+
+```json
+{"ok": false,
+ "errors": [{"code": "port_validation",
+             "message": "端口参数未通过校验",
+             "items": [{"ref": "端口",
+                        "detail": "端口两端不能为同一节点（当前均为“1”）"}]}]}
+```
+
+### 校验规则汇总
+
+| 情形 | 处理 |
+| ---- | ---- |
+| 缺少 `port` 段 / 正端或负端为空 | 拒绝计算（`422 port_validation`，无 `stage`） |
+| 正端与负端为同一节点 | 拒绝计算 |
+| 正端或负端节点不在节点表 | 拒绝计算 |
+| 开路阶段网络无唯一解 | `422` + 原结构化错误，`stage: "open_circuit"` |
+| 置零 + 注入测试电流后无唯一解 | `422` + 原结构化错误，`stage: "equivalent_resistance"` |
+
 ## 本地开发（不使用 Docker）
 
 ```bash
@@ -188,15 +293,17 @@ uvicorn app.main:app --reload --port 8000
 ```
 .
 ├── app/
-│   ├── main.py            # FastAPI 路由（/api/solve、/api/sweep）与静态文件
+│   ├── main.py            # FastAPI 路由（/api/solve、/api/sweep、/api/thevenin）与静态文件
 │   ├── solver.py          # MNA 组装、结构诊断与求解
 │   ├── sweep.py           # 单参数扫描：校验 + 逐点复用 solve
+│   ├── thevenin.py        # 两节点端口等效：开路电压 + 1A 测试电流求等效电阻
 │   └── static/
-│       ├── index.html     # 页面结构（含扫描表单与结果区）
-│       ├── style.css      # 样式与高亮（含扫描曲线样式）
-│       └── app.js         # 表格编辑、校验、单次求解与扫描交互
+│       ├── index.html     # 页面结构（含扫描表单、端口等效表单与结果区）
+│       ├── style.css      # 样式与高亮（含扫描曲线、端口卡片样式）
+│       └── app.js         # 表格编辑、校验、单次求解、扫描与端口等效交互
 ├── test_solver.py         # 求解器冒烟测试：python3 test_solver.py
 ├── test_sweep.py          # 扫描冒烟测试：python3 test_sweep.py
+├── test_thevenin.py       # 端口等效冒烟测试：python3 test_thevenin.py
 ├── Dockerfile
 ├── compose.yaml
 └── requirements.txt

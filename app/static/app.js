@@ -13,6 +13,8 @@ let state = freshState();
 // 最近一次扫描的完整响应（含全部点的节点电压 / 支路电流），切换观测量只读取它
 let sweepResult = null;
 let sweepView = { quantity: "voltage", target: null };
+// 最近一次端口等效结果；节点表变更后失效（stale 提示由 #port-stale 体现）
+let theveninResult = null;
 
 function freshState() {
   return {
@@ -111,10 +113,14 @@ function renderNodes() {
       state.nodes[i].id = input.value.trim();
       renderGroundSelect();
       refreshEndpointSelects();
+      renderPortSelects();
+      // 端口节点编号变化即可能与旧结果不再对应：失效旧结果
+      invalidateThevenin();
     });
     const del = el("button", { class: "icon-del", title: "删除", text: "✕" });
     del.addEventListener("click", () => {
       state.nodes.splice(i, 1);
+      invalidateThevenin();
       renderAll();
     });
     const tr = el("tr", { "data-id": n.id || `__row_${i}` }, [
@@ -186,11 +192,42 @@ function refreshEndpointSelects() {
   });
 }
 
+/* ------------------------------ 两节点端口等效 ------------------------------ */
+function renderPortSelects() {
+  // 与接地下拉相同的保留策略：只重建选项，不重建下拉本身
+  const ids = nodeIds();
+  const pSel = $("#port-p");
+  const nSel = $("#port-n");
+  setSelectOptions(pSel, ids, pSel.value);
+  setSelectOptions(nSel, ids, nSel.value);
+  // 表为空时两个下拉都落到空串；默认给 p=首节点、n=次节点，避免两端相同
+  if (!pSel.value && ids.length) pSel.value = ids[0];
+  if (!nSel.value && ids.length > 1) nSel.value = ids[1];
+}
+
+function invalidateThevenin() {
+  if (!theveninResult) return;
+  theveninResult = null;
+  $("#thevenin-result").classList.add("hidden");
+  const stale = $("#port-stale");
+  stale.classList.remove("hidden");
+}
+
+function resetThevenin() {
+  // 整表替换（载入示例 / 清空）时连带清除“已失效”提示
+  theveninResult = null;
+  $("#thevenin-result").classList.add("hidden");
+  $("#port-stale").classList.add("hidden");
+  $("#port-feedback").classList.add("hidden");
+  $("#port-feedback").innerHTML = "";
+}
+
 function renderAll() {
   renderNodes();
   renderElements();
   renderGroundSelect();
   renderSweepElements();
+  renderPortSelects();
   clearFeedback();
 }
 
@@ -240,6 +277,7 @@ function nextElementId(type) {
 $("#btn-add-node").addEventListener("click", () => {
   if (state.nodes.length >= MAX_NODES) return;
   state.nodes.push({ id: nextNodeId() });
+  invalidateThevenin();
   renderAll();
 });
 
@@ -269,6 +307,7 @@ document.querySelectorAll("[data-sample]").forEach((btn) => {
       elements: s.elements.map((e) => ({ ...e, value: String(e.value) })),
     };
     resetSweep();
+    resetThevenin();
     renderAll();
     $("#placeholder").classList.add("hidden");
   });
@@ -277,6 +316,7 @@ document.querySelectorAll("[data-sample]").forEach((btn) => {
 $("#btn-clear").addEventListener("click", () => {
   state = { ground: "", nodes: [], elements: [] };
   resetSweep();
+  resetThevenin();
   renderAll();
   $("#result-area").classList.add("hidden");
   $("#placeholder").classList.remove("hidden");
@@ -538,6 +578,126 @@ $("#btn-solve").addEventListener("click", async () => {
     showWarnings(data.warnings);
   } else {
     showErrors(data.errors || [{ code: "server", message: "求解失败", items: [] }]);
+  }
+});
+
+/* ------------------------------ 两节点端口等效 ------------------------------ */
+const STAGE_LABEL = {
+  open_circuit: "开路端电压阶段",
+  equivalent_resistance: "等效电阻阶段",
+};
+
+function showTheveninError(message) {
+  const fb = $("#port-feedback");
+  fb.innerHTML = "";
+  fb.appendChild(el("div", { class: "err-title", text: `● ${message}` }));
+  fb.classList.remove("hidden");
+}
+
+function validatePortForm() {
+  const items = [];
+  const p = $("#port-p").value;
+  const n = $("#port-n").value;
+  if (!p) items.push("请选择端口正端 p 节点");
+  if (!n) items.push("请选择端口负端 n 节点");
+  if (p && n && p === n) items.push(`端口两端不能为同一节点（当前均为“${p}”）`);
+  if (items.length) {
+    showTheveninError("端口参数未通过校验：" + items.join("；"));
+    return null;
+  }
+  return { node_p: p, node_n: n };
+}
+
+function renderTheveninResult(r) {
+  const card = $("#thevenin-card");
+  card.innerHTML = "";
+  const stat = (k, v, cls = "") =>
+    el("div", { class: "power-stat" }, [
+      el("span", { class: "k", text: k }),
+      el("span", { class: "v " + cls, text: v }),
+    ]);
+  const vocNeg = r.open_circuit_voltage < 0;
+  card.appendChild(
+    stat("端口方向", `${r.port.node_p} → ${r.port.node_n}`)
+  );
+  card.appendChild(
+    stat(
+      "开路电压 Voc",
+      `${fmt(r.open_circuit_voltage)} V`,
+      vocNeg ? "num-neg" : ""
+    )
+  );
+  card.appendChild(
+    stat("等效电阻 Req", `${fmt(r.equivalent_resistance)} Ω`)
+  );
+  card.appendChild(
+    el("div", { class: "thv-note" }, [
+      document.createTextNode("等效为 "),
+      el("b", { text: `${fmt(r.open_circuit_voltage)} V` }),
+      document.createTextNode(" 理想电压源（"),
+      el("b", { text: `${r.port.node_p}` }),
+      document.createTextNode(" 为正极、"),
+      el("b", { text: `${r.port.node_n}` }),
+      document.createTextNode(" 为参考负端）串联 "),
+      el("b", { text: `${fmt(r.equivalent_resistance)} Ω` }),
+      document.createTextNode(" 电阻；Voc 为负表示实际极性与所选方向相反。"),
+    ])
+  );
+  $("#port-direction").textContent = `端口 ${r.port.node_p} → ${r.port.node_n}`;
+  $("#thevenin-result").classList.remove("hidden");
+}
+
+$("#btn-thevenin").addEventListener("click", async () => {
+  $("#port-feedback").classList.add("hidden");
+  $("#warning-panel").classList.add("hidden");
+  $("#warning-panel").innerHTML = "";
+  const port = validatePortForm();
+  if (!port) return;
+
+  const btn = $("#btn-thevenin");
+  btn.disabled = true;
+  btn.textContent = "计算中…";
+  try {
+    const payload = buildPayload();
+    payload.port = port;
+
+    let resp;
+    try {
+      resp = await fetch("/api/thevenin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      showTheveninError(`网络请求失败：${err}`);
+      return;
+    }
+
+    let data;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      showTheveninError("服务端返回了无法解析的内容");
+      return;
+    }
+
+    if (resp.ok && data.ok) {
+      theveninResult = data;
+      $("#port-stale").classList.add("hidden");
+      renderTheveninResult(data);
+      showWarnings(data.warnings);
+    } else {
+      const lines = flattenErrors(data.errors);
+      let msg = lines.length ? lines.join("；") : "端口等效计算失败";
+      if (data.stage && STAGE_LABEL[data.stage]) {
+        msg = `【${STAGE_LABEL[data.stage]}】${msg}`;
+      }
+      $("#thevenin-result").classList.add("hidden");
+      showTheveninError(msg);
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔌 计算端口等效";
   }
 });
 
